@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::Parser;
-use eyre::{Context, ContextCompat, Result};
+use eyre::{Context, ContextCompat, Result, eyre};
 use listenfd::ListenFd;
 use ppp::v2;
 use tokio::io::AsyncWriteExt;
@@ -25,25 +25,21 @@ async fn get_listener() -> Result<TfoListener> {
     Ok(TfoListener::from_std(listener)?)
 }
 
-async fn handle_client(
-    client_stream: TfoStream,
-    client_addr: SocketAddr,
-    target_addr: Arc<TargetAddr>,
-) -> Result<()> {
-    debug!(?client_addr, "new inbound connection");
+pub struct TargetConnection {
+    pub stream: TfoStream,
+    pub target: SocketAddr,
+    pub normalized_target: SocketAddr,
+}
 
-    client_stream.set_nodelay(true)?;
+async fn establish_proxy_connection(
+    addr: SocketAddr,
+    normalized_client: SocketAddr,
+    normalized_target: SocketAddr,
+) -> eyre::Result<TfoStream> {
+    let mut stream = TfoStream::connect(addr).await?;
+    stream.set_nodelay(true).wrap_err("failed to set nodelay")?;
 
-    let resolved_target = target_addr
-        .resolve()
-        .await
-        .wrap_err("failed to resolve target address")?;
-
-    debug!(?resolved_target, ?target_addr.host, ?target_addr.port, "resolved target");
-
-    // Normalize IPv4-mapped IPv6 addresses to IPv4
-    let normalized_client = normalize_addr(client_addr);
-    let normalized_target = normalize_addr(resolved_target);
+    trace!(?addr, ?normalized_client, "initial connection set up");
 
     let proxy_header = v2::Builder::with_addresses(
         v2::Version::Two | v2::Command::Proxy,
@@ -53,19 +49,79 @@ async fn handle_client(
     .build()
     .wrap_err("failed to build PROXY protocol v2 header")?;
 
-    let mut target_stream = TfoStream::connect(resolved_target)
-        .await
-        .with_context(|| format!("failed to connect to target {}", resolved_target))?;
-
-    target_stream.set_nodelay(true)?;
-
-    debug!(?resolved_target, ?client_addr, "connection established");
-
-    // In case TFO worked, this will be sent in the SYN packet
-    target_stream
+    stream
         .write_all(&proxy_header)
         .await
-        .wrap_err("failed to write PROXY protocol header")?;
+        .wrap_err("failed to write PROXY header")?;
+    trace!(?addr, ?normalized_client, "wrote proxy header");
+
+    Ok(stream)
+}
+
+async fn connect_to_target(
+    filtered_targets: &[SocketAddr],
+    normalized_client: SocketAddr,
+) -> Result<TargetConnection> {
+    let mut result = None;
+    let mut last_error = None;
+
+    for addr in filtered_targets {
+        let normalized_target = normalize_addr(*addr);
+
+        match establish_proxy_connection(*addr, normalized_client, normalized_target).await {
+            Ok(stream) => {
+                debug!(?addr, "connection established");
+                result = Some(TargetConnection {
+                    stream,
+                    target: *addr,
+                    normalized_target,
+                });
+                break;
+            }
+            Err(err) => {
+                debug!(?addr, ?err, "failed to establish connection, trying next");
+                last_error = Some(err);
+            }
+        }
+    }
+
+    result.ok_or_else(|| {
+        last_error
+            .map(|err| eyre!("failed to connect to any target address: {:?}", err))
+            .unwrap_or_else(|| eyre!("no target addresses to connect to"))
+    })
+}
+
+async fn handle_client(
+    client_stream: TfoStream,
+    client_addr: SocketAddr,
+    target_addr: Arc<TargetAddr>,
+    strict_ip_version_mapping: bool,
+) -> Result<()> {
+    let normalized_client = normalize_addr(client_addr);
+    debug!(?client_addr, ?normalized_client, "new inbound connection");
+
+    client_stream.set_nodelay(true)?;
+
+    let filtered_targets = target_addr
+        .resolve(strict_ip_version_mapping.then_some(normalized_client))
+        .await
+        .wrap_err("failed to resolve target address")?;
+
+    debug!(
+        ?filtered_targets,
+        ?target_addr.host,
+        ?target_addr.port,
+        "resolved target addresses"
+    );
+
+    let TargetConnection {
+        stream: target_stream,
+        target,
+        normalized_target,
+    } = connect_to_target(&filtered_targets, normalized_client).await?;
+
+    debug!(?target, ?client_addr, "connection established");
 
     trace!(
         ?normalized_client,
@@ -118,6 +174,11 @@ struct Args {
     /// Target address to proxy to (HOST:PORT or HOST__PORT for systemd unit instances)
     #[arg(long, env = "TARGET", default_value = "127.0.0.1:8080")]
     target: TargetAddr,
+
+    /// Whether to match client ip version with target ip version. Setting this option requires dual-stack support
+    /// on backend services as well, and implies --target is DNS which will resolve both A and AAAA records.
+    #[arg(long, env = "STRICT_IP_VERSION_MAPPING", default_value_t = false)]
+    strict_ip_version_mapping: bool,
 }
 
 #[tokio::main]
@@ -141,7 +202,6 @@ async fn main() -> Result<()> {
 
     loop {
         tokio::select! {
-            biased;
             _ = sigint.recv() => {
                 info!("sigint received");
                 break;
@@ -152,7 +212,7 @@ async fn main() -> Result<()> {
                     Ok((stream, addr)) => {
                         let target_addr = Arc::clone(&target_addr);
                         tokio::spawn(async move {
-                            if let Err(err) = handle_client(stream, addr, target_addr).await {
+                            if let Err(err) = handle_client(stream, addr, target_addr, args.strict_ip_version_mapping).await {
                                 error!(?err, ?addr, "failed to handle client");
                             }
                         });

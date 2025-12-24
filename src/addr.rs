@@ -3,7 +3,9 @@ use std::{
     str::FromStr,
 };
 
-use eyre::Context;
+use eyre::{Context, bail};
+
+use tracing::debug;
 
 /// Target address that supports hostnames and IP addresses, with `__` separator support
 #[derive(Debug, Clone)]
@@ -36,14 +38,47 @@ impl FromStr for TargetAddr {
 }
 
 impl TargetAddr {
-    /// Resolve the target address to a SocketAddr
-    pub async fn resolve(&self) -> eyre::Result<SocketAddr> {
+    /// Resolve the target address to a list of SocketAddrs filtered to match the client's IP version.
+    /// If client is IPv4, only returns IPv4 addresses; if IPv6, only returns IPv6 addresses.
+    pub async fn resolve(&self, client_addr: Option<SocketAddr>) -> eyre::Result<Vec<SocketAddr>> {
         let addr = format!("{}:{}", self.host, self.port);
-        tokio::net::lookup_host(&addr)
+        let addresses: Vec<SocketAddr> = tokio::net::lookup_host(&addr)
             .await
             .wrap_err("failed to resolve hostname")?
-            .next()
-            .ok_or_else(|| eyre::eyre!("no addresses found for {}", addr))
+            .collect();
+
+        if addresses.is_empty() {
+            bail!("no addresses found for {}", addr);
+        }
+
+        // If client address is not supplied, return any address
+        let Some(client_addr) = client_addr else {
+            return Ok(addresses);
+        };
+
+        let client_is_ipv6 = client_addr.ip().is_ipv6();
+        debug!(
+            client_is_ipv6,
+            "matching target ip address version with client"
+        );
+
+        // Filter addresses to match client's IP version
+        let filtered: Vec<SocketAddr> = addresses
+            .into_iter()
+            .filter(|addr| addr.ip().is_ipv6() == client_is_ipv6)
+            .collect();
+
+        if filtered.is_empty() {
+            let ip_version_str = if client_is_ipv6 { "IPv6" } else { "IPv4" };
+            bail!(
+                "no {} addresses found for target {} (client is {})",
+                ip_version_str,
+                self.host,
+                ip_version_str
+            );
+        }
+
+        Ok(filtered)
     }
 }
 
