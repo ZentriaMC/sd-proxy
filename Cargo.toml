@@ -1,0 +1,14 @@
+[package]
+name = "sd-proxy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["env", "derive"] }
+eyre = "0.6"
+listenfd = "1"
+ppp = "2.3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal"] }
+tokio-tfo = { git = "https://github.com/ZentriaMC/tokio-tfo.git", rev = "6e121ee7cdc422bb83c2c891471d5f54eaebe996" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

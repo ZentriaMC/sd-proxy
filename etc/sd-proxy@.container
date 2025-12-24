@@ -1,0 +1,23 @@
+[Unit]
+Description=sd-proxy %i
+Requires=sd-proxy@%i.socket
+After=sd-proxy@%i.socket
+
+[Container]
+ContainerName=sd-proxy-%i
+HostName=sd-proxy-%i
+Image=localhost/sd-proxy:latest
+NoNewPrivileges=true
+Notify=false
+Environment=TARGET=%i
+Environment=RUST_LOG=trace
+LogDriver=journald
+
+[Service]
+Sockets=sd-proxy@%i.socket
+Restart=always
+RestartSec=3
+TimeoutStopSec=600
+
+[Install]
+WantedBy=multi-user.target
