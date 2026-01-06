@@ -31,7 +31,7 @@ case "${arch}" in
 esac
 
 export CARGO_BUILD_TARGET
-cargo build --release --target-dir=/target
+cargo build --release --target-dir=/target --features=splice
 EOF
 
 RUN --mount=type=cache,sharing=locked,target=/target,ro \

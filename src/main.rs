@@ -1,3 +1,6 @@
+#[cfg(all(feature = "splice", not(target_os = "linux")))]
+compile_error!("Cannot enable splice feature on non-Linux targets");
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -129,19 +132,33 @@ async fn handle_client(
         "sent PROXY protocol v2 header",
     );
 
-    let (mut client_read, mut client_write) = client_stream.split();
-    let (mut target_read, mut target_write) = target_stream.split();
+    bidirectional_copy(client_stream, target_stream).await?;
 
-    let client_to_target = async move {
-        let result = tokio::io::copy(&mut client_read, &mut target_write).await;
+    debug!(?normalized_client, ?normalized_target, "connection closed");
+    Ok(())
+}
+
+#[cfg(feature = "splice")]
+async fn bidirectional_copy(mut a: TfoStream, mut b: TfoStream) -> eyre::Result<()> {
+    tokio_splice2::copy_bidirectional(&mut a, &mut b).await?;
+    Ok(())
+}
+
+#[cfg(not(feature = "splice"))]
+async fn bidirectional_copy(a: TfoStream, b: TfoStream) -> eyre::Result<()> {
+    let (mut a_read, mut a_write) = a.split();
+    let (mut b_read, mut b_write) = b.split();
+
+    let a_to_b = async move {
+        let result = tokio::io::copy(&mut a_read, &mut b_write).await;
         if let Err(ref err) = result {
             error!(?err, "error copying client -> target");
         }
         result
     };
 
-    let target_to_client = async move {
-        let result = tokio::io::copy(&mut target_read, &mut client_write).await;
+    let b_to_a = async move {
+        let result = tokio::io::copy(&mut b_read, &mut a_write).await;
         if let Err(ref err) = result {
             error!(?err, "error copying target -> client");
         }
@@ -149,19 +166,18 @@ async fn handle_client(
     };
 
     tokio::select! {
-        result = client_to_target => {
+        result = a_to_b => {
             if let Ok(bytes) = result {
                 trace!(?bytes, "client -> target done");
             }
         }
-        result = target_to_client => {
+        result = b_to_a => {
             if let Ok(bytes) = result {
                 trace!(?bytes, "target -> client done");
             }
         }
     }
 
-    debug!(?normalized_client, ?normalized_target, "connection closed");
     Ok(())
 }
 
