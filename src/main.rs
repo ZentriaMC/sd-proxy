@@ -2,9 +2,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::Parser;
-use eyre::{Context, ContextCompat, Result, eyre};
+use eyre::{Context, ContextCompat, Result, bail, eyre};
 use listenfd::ListenFd;
-use ppp::v2;
 use tokio::io::AsyncWriteExt;
 use tokio::signal;
 use tokio_tfo::{TfoListener, TfoStream};
@@ -35,25 +34,48 @@ async fn establish_proxy_connection(
     addr: SocketAddr,
     normalized_client: SocketAddr,
     normalized_target: SocketAddr,
+    use_v2_header: bool,
 ) -> eyre::Result<TfoStream> {
     let mut stream = TfoStream::connect(addr).await?;
     stream.set_nodelay(true).wrap_err("failed to set nodelay")?;
 
     trace!(?addr, ?normalized_client, "initial connection set up");
 
-    let proxy_header = v2::Builder::with_addresses(
-        v2::Version::Two | v2::Command::Proxy,
-        v2::Protocol::Stream,
-        (normalized_client, normalized_target),
-    )
-    .build()
-    .wrap_err("failed to build PROXY protocol v2 header")?;
+    if use_v2_header {
+        let header = ppp::v2::Builder::with_addresses(
+            ppp::v2::Version::Two | ppp::v2::Command::Proxy,
+            ppp::v2::Protocol::Stream,
+            (normalized_client, normalized_target),
+        )
+        .build()
+        .wrap_err("failed to build PROXY protocol v2 header")?;
 
-    stream
-        .write_all(&proxy_header)
-        .await
-        .wrap_err("failed to write PROXY header")?;
-    trace!(?addr, ?normalized_client, "wrote proxy header");
+        stream
+            .write_all(&header)
+            .await
+            .wrap_err("failed to write PROXY header")?;
+    } else {
+        let addresses = match ppp::v1::Addresses::from((normalized_client, normalized_target)) {
+            ppp::v1::Addresses::Unknown => bail!(
+                "source & destination ip version mismatch: {} != {}",
+                normalized_client,
+                normalized_target,
+            ),
+            v => v,
+        };
+
+        stream
+            .write_all(format!("{}", addresses).as_bytes())
+            .await
+            .wrap_err("failed to write PROXY header")?;
+    };
+
+    trace!(
+        ?addr,
+        ?normalized_client,
+        use_v2_header,
+        "wrote proxy header"
+    );
 
     Ok(stream)
 }
@@ -61,6 +83,7 @@ async fn establish_proxy_connection(
 async fn connect_to_target(
     filtered_targets: &[SocketAddr],
     normalized_client: SocketAddr,
+    use_v2_header: bool,
 ) -> Result<TargetConnection> {
     let mut result = None;
     let mut last_error = None;
@@ -68,7 +91,9 @@ async fn connect_to_target(
     for addr in filtered_targets {
         let normalized_target = normalize_addr(*addr);
 
-        match establish_proxy_connection(*addr, normalized_client, normalized_target).await {
+        match establish_proxy_connection(*addr, normalized_client, normalized_target, use_v2_header)
+            .await
+        {
             Ok(stream) => {
                 debug!(?addr, "connection established");
                 result = Some(TargetConnection {
@@ -97,6 +122,7 @@ async fn handle_client(
     client_addr: SocketAddr,
     target_addr: Arc<TargetAddr>,
     strict_ip_version_mapping: bool,
+    use_v2_header: bool,
 ) -> Result<()> {
     let normalized_client = normalize_addr(client_addr);
     debug!(?client_addr, ?normalized_client, "new inbound connection");
@@ -119,15 +145,9 @@ async fn handle_client(
         stream: target_stream,
         target,
         normalized_target,
-    } = connect_to_target(&filtered_targets, normalized_client).await?;
+    } = connect_to_target(&filtered_targets, normalized_client, use_v2_header).await?;
 
     debug!(?target, ?client_addr, "connection established");
-
-    trace!(
-        ?normalized_client,
-        ?normalized_target,
-        "sent PROXY protocol v2 header",
-    );
 
     let (mut client_read, mut client_write) = client_stream.split();
     let (mut target_read, mut target_write) = target_stream.split();
@@ -179,6 +199,10 @@ struct Args {
     /// on backend services as well, and implies --target is DNS which will resolve both A and AAAA records.
     #[arg(long, env = "STRICT_IP_VERSION_MAPPING", default_value_t = false)]
     strict_ip_version_mapping: bool,
+
+    /// Whether to use v2 PROXY header or not.
+    #[arg(long, env = "USE_V2_HEADER", default_value_t = true)]
+    use_v2_header: bool,
 }
 
 #[tokio::main]
@@ -212,7 +236,7 @@ async fn main() -> Result<()> {
                     Ok((stream, addr)) => {
                         let target_addr = Arc::clone(&target_addr);
                         tokio::spawn(async move {
-                            if let Err(err) = handle_client(stream, addr, target_addr, args.strict_ip_version_mapping).await {
+                            if let Err(err) = handle_client(stream, addr, target_addr, args.strict_ip_version_mapping, args.use_v2_header).await {
                                 error!(?err, ?addr, "failed to handle client");
                             }
                         });
