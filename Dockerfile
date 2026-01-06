@@ -38,11 +38,16 @@ RUN --mount=type=cache,sharing=locked,target=/target,ro \
     mkdir -p /build && \
     cp /target/$(uname -m)-*-musl/release/sd-proxy /build/sd-proxy
 
+FROM alpine:3.23 AS catatonit
+RUN apk add --no-cache catatonit
+
 FROM scratch
 
+COPY --from=catatonit --chown=0:0 /usr/bin/catatonit /usr/bin/catatonit
 COPY --from=builder --chown=0:0 /build/sd-proxy /usr/local/bin/sd-proxy
 
 USER 2000:2000
-ENV PATH=/usr/local/bin
+ENV PATH=/usr/bin:/usr/local/bin
 
+ENTRYPOINT ["catatonit", "--"]
 CMD ["sd-proxy"]
