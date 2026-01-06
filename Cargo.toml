@@ -9,6 +9,13 @@ eyre = "0.6"
 listenfd = "1"
 ppp = "2.3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal"] }
-tokio-tfo = { git = "https://github.com/ZentriaMC/tokio-tfo.git", rev = "6e121ee7cdc422bb83c2c891471d5f54eaebe996" }
+tokio-tfo = { git = "https://github.com/ZentriaMC/tokio-tfo.git", rev = "0de2d2a8a4d3071e6611a83b7c2159b9d1dfd4d5" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = []
+splice = ["dep:tokio-splice2", "tokio-tfo/tokio-splice2"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-splice2 = { version = "0.3.2", optional = true }
