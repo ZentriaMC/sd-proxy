@@ -227,6 +227,7 @@ async fn main() -> Result<()> {
                     }
                     Err(err) => {
                         error!(?err, "failed to accept");
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
                 }
             }
