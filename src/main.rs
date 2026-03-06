@@ -145,39 +145,9 @@ async fn bidirectional_copy(mut a: TfoStream, mut b: TfoStream) -> eyre::Result<
 }
 
 #[cfg(not(feature = "splice"))]
-async fn bidirectional_copy(a: TfoStream, b: TfoStream) -> eyre::Result<()> {
-    let (mut a_read, mut a_write) = a.split();
-    let (mut b_read, mut b_write) = b.split();
-
-    let a_to_b = async move {
-        let result = tokio::io::copy(&mut a_read, &mut b_write).await;
-        if let Err(ref err) = result {
-            error!(?err, "error copying client -> target");
-        }
-        result
-    };
-
-    let b_to_a = async move {
-        let result = tokio::io::copy(&mut b_read, &mut a_write).await;
-        if let Err(ref err) = result {
-            error!(?err, "error copying target -> client");
-        }
-        result
-    };
-
-    tokio::select! {
-        result = a_to_b => {
-            if let Ok(bytes) = result {
-                trace!(?bytes, "client -> target done");
-            }
-        }
-        result = b_to_a => {
-            if let Ok(bytes) = result {
-                trace!(?bytes, "target -> client done");
-            }
-        }
-    }
-
+async fn bidirectional_copy(mut a: TfoStream, mut b: TfoStream) -> eyre::Result<()> {
+    let (a_to_b, b_to_a) = tokio::io::copy_bidirectional(&mut a, &mut b).await?;
+    trace!(a_to_b, b_to_a, "copy finished");
     Ok(())
 }
 
