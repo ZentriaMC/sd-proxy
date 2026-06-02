@@ -13,6 +13,9 @@ env:
   REGISTRY: "ghcr.io"
   IMAGE_NAME: "zentriamc/sd-proxy"
   IMAGE_NAME_ECHO: "zentriamc/sd-proxy-echo"
+  # github.ref_name is `<pr>/merge` on pull_request events — invalid as a Docker tag. PR builds
+  # don't push, so a synthetic `pr-<n>` tag is enough; tag pushes keep the release tag verbatim.
+  VERSION: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
 
 jobs:
   build:
@@ -51,7 +54,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           cache-from: "type=gha"
           cache-to: "type=gha,mode=max"
@@ -65,7 +68,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_ECHO }}:${{ github.ref_name }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_ECHO }}:${{ env.VERSION }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_ECHO }}:latest
           cache-from: "type=gha"
           cache-to: "type=gha,mode=max"
@@ -88,8 +91,8 @@ jobs:
                 ;;
             esac
 
-            docker pull --platform "${platform}" "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
-            container_id=$(docker container create --platform "${platform}" "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}")
+            docker pull --platform "${platform}" "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}"
+            container_id=$(docker container create --platform "${platform}" "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}")
             docker cp "${container_id}":/usr/local/bin/sd-proxy "${binary_name}"
             docker rm "${container_id}"
           done
