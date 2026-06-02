@@ -1,6 +1,6 @@
 [package]
 name = "sd-proxy"
-version = "2026.3.2"
+version = "2026.6.1"
 edition = "2024"
 
 [dependencies]
