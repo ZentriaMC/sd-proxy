@@ -36,10 +36,24 @@ EOF
 
 RUN --mount=type=cache,sharing=locked,target=/target,ro \
     mkdir -p /build && \
-    cp /target/$(uname -m)-*-musl/release/sd-proxy /build/sd-proxy
+    cp /target/$(uname -m)-*-musl/release/sd-proxy /build/sd-proxy && \
+    cp /target/$(uname -m)-*-musl/release/proxy-echo /build/proxy-echo
 
 FROM alpine:3.23 AS catatonit
 RUN apk add --no-cache catatonit
+
+# Test backend for the data-path e2e (`docker build --target proxy-echo`). Kept ahead of the
+# default sd-proxy stage so a bare `docker build .` (and the release CI) is unaffected.
+FROM scratch AS proxy-echo
+
+COPY --from=catatonit --chown=0:0 /usr/bin/catatonit /usr/bin/catatonit
+COPY --from=builder --chown=0:0 /build/proxy-echo /usr/local/bin/proxy-echo
+
+USER 2000:2000
+ENV PATH=/usr/bin:/usr/local/bin
+
+ENTRYPOINT ["catatonit", "--"]
+CMD ["proxy-echo"]
 
 FROM scratch
 
